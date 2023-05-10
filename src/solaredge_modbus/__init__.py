@@ -42,7 +42,30 @@ class inverterStatus(enum.Enum):
     I_STATUS_FAULT = 7
     I_STATUS_STANDBY = 8
 
+class StorageControlMode(enum.Enum):
+    DISABLED = 0
+    MSC = 1
+    TOU = 2
+    BACKUP_ONLY = 3
+    REMOTE_CONTROL = 4
 
+class StorageAcChargePolicy(enum.Enum):
+    DISABLED = 0
+    ALWAYS_ALOWED = 1
+    FIXED_ENERGY_LIMIT = 2
+    PERCENT_OF_PRODUCTION = 3
+
+class StorageOperationMode(enum.Enum):
+    DISABLED = 0  # No Charge and discharge at all
+    CHARGE_EXCESS_PV = 1  # No Discharge. Charge only PV that cannot be outputted.
+    CHARGE_PV = 2  # No Discharge. Charge as much PV as possible.
+    CHARGE_PV_AND_GRID = 3  # No Discharge. Charge at maximum speed (even from the grid), forbidden if
+    # "charge from grid" is forbidden.
+    MAXIMIZE_EXPORT = 4  # Discharge as much as allowed. Charge only excess PV, forbidden if
+    # "discharge to grid" is forbidden.
+    MINIMIZE_IMPORT = 5  # Discharge to satisfy consumption. Charge only excess PV.
+    MAXIMIZE_SELF_CONSUMPTION = 7  # Discharge to satisfy consumption.
+    INVALID_MODE = 65535  # This mode is set when the command mode is not REMOTE_CONTROL
 class batteryStatus(enum.Enum):
     B_STATUS_OFF = 1
     B_STATUS_EMPTY = 2
@@ -525,6 +548,8 @@ class Inverter(SolarEdge):
 
         return {f"Battery{idx + 1}": Battery(offset=idx, parent=self) for idx, v in enumerate(batteries) if v != 255}
 
+    def enhanced_data(self):
+        return InverterEnhancedData(parent=self)
 
 class Meter(SolarEdge):
 
@@ -673,3 +698,55 @@ class Battery(SolarEdge):
             "event_log": (0xe18a + self.offset, 2, registerType.HOLDING, registerDataType.UINT16, int, "Event Log", "", 2),
             "event_log_internal": (0xe192 + self.offset, 2, registerType.HOLDING, registerDataType.UINT16, int, "Internal Event Log", "", 2),
         }
+
+class InverterEnhancedData(SolarEdge):
+    def __init__(self, *args, **kwargs):
+        self.model = "InverterEnhancedPower"
+        self.wordorder = Endian.Little
+
+        super().__init__(*args, **kwargs)
+
+        self.registers = {
+            # URL: https://www.photovoltaikforum.com/core/attachment/88445-power-control-open-protocol-for-solaredge-inverters-pdf/
+            # name, address, length, register, type, target type, description, unit, batch
+            "max_active_power": (0xF304, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Max Active Power", "W", 1),
+
+            "export_control_mode": (0xE000, 1, registerType.HOLDING, registerDataType.UINT16, int, "Export control mode", "", 2),
+
+            "export_control_limit_mode": (0xE001, 1, registerType.HOLDING, registerDataType.UINT16, int, "export control limit mode", "",2),
+
+            "export_control_site_limit": (0xE002, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "export control site limit", "W", 2),
+
+            "storage_control_mode": (0xE004, 1, registerType.HOLDING, registerDataType.UINT16, int, "storage control mode", "StorageControlMode", 2),
+
+            "storage_ac_charge_policy": (0xE005, 1, registerType.HOLDING, registerDataType.UINT16, int, "storage ac charge policy", "StorageAcChargePolicy", 2),
+
+            "storage_ac_charge_limit": (0xE006, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "storage ac charge limit", "KWh or %", 2),
+
+            "storage_backup_reserve": (0xE008, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "storage backup reserve", "%", 2),
+
+            "storage_command_default_mode": (0xE00A, 1, registerType.HOLDING, registerDataType.UINT16, int, "storage command default mode", "StorageOperationMode", 3),
+
+            "storage_command_timeout": (0xE00B, 2, registerType.HOLDING, registerDataType.UINT32, int, "storage command timeout", "Sec", 3),
+
+            "storage_command_mode": (0xE00D, 1, registerType.HOLDING, registerDataType.UINT16, int, "storage command mode", "StorageOperationMode", 3),
+
+            "storage_charge_limit": (0xE00E, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "storage charge limit", "", 3),
+
+            "storage_discharge_limit": (0xE010, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "storage discharge limit", "", 3),
+
+            #https://confluence.solaredge.com/pages/viewpage.action?spaceKey=PRT&title=Portia+Modbus+-+Site+Data
+
+            "site_storage_remaining_time": (0xE027, 2, registerType.HOLDING, registerDataType.UINT32, int, "storage remaining time to empty", "Sec", 4),
+            "site_production": (0xE029, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Aggregated site production", "W", 4),
+            "site_storage_power": (0xE02B, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Aggregated batteries power production/"
+                                                                                                     "consumption in the site positive- charge, neg- discharge", "W", 4),
+            "site_pv_power": (0xE02D, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Aggregated site PV power", "W", 4),
+            "site_storage_soe": (0xE02F, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Aggregated SOE of all batteries on site", "0-100", 4),
+        }
+
+if __name__ == "__main__":
+    inverter = Inverter(host="192.168.0.23", port=1502)
+    print(inverter.enhanced_data().read_all())
+    #print(inverter.read("export_control_mode"))
+    #print(inverter.read_all())
