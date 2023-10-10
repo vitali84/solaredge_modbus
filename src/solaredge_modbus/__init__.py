@@ -1,11 +1,11 @@
+import asyncio
 import enum
 import time
 
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadBuilder
 from pymodbus.payload import BinaryPayloadDecoder
-from pymodbus.client import ModbusTcpClient
-from pymodbus.client import ModbusSerialClient
+from pymodbus.client import AsyncModbusTcpClient, AsyncModbusSerialClient
 from pymodbus.register_read_message import ReadHoldingRegistersResponse
 
 
@@ -233,7 +233,7 @@ class SolarEdge:
 
             if device:
                 self.mode = connectionType.RTU
-                self.client = ModbusSerialClient(
+                self.client = AsyncModbusSerialClient(
                     method="rtu",
                     port=self.device,
                     stopbits=self.stopbits,
@@ -242,7 +242,7 @@ class SolarEdge:
                     timeout=self.timeout)
             else:
                 self.mode = connectionType.TCP
-                self.client = ModbusTcpClient(
+                self.client = AsyncModbusTcpClient(
                     host=self.host,
                     port=self.port,
                     timeout=self.timeout
@@ -256,14 +256,14 @@ class SolarEdge:
         else:
             return f"<{self.__class__.__module__}.{self.__class__.__name__} object at {hex(id(self))}>"
 
-    def _read_holding_registers(self, address, length):
+    async def _read_holding_registers(self, address, length):
         for i in range(self.retries):
             if not self.connected():
-                self.connect()
+                await self.connect()
                 time.sleep(0.1)
                 continue
 
-            result = self.client.read_holding_registers(address, length, slave=self.unit)
+            result = await self.client.read_holding_registers(address, length, slave=self.unit)
 
             if not isinstance(result, ReadHoldingRegistersResponse):
                 continue
@@ -274,8 +274,8 @@ class SolarEdge:
 
         return None
 
-    def _write_holding_register(self, address, value):
-        return self.client.write_registers(address=address, values=value, slave=self.unit)
+    async def _write_holding_register(self, address, value):
+        return await self.client.write_registers(address=address, values=value, slave=self.unit)
 
     def _encode_value(self, data, dtype):
         builder = BinaryPayloadBuilder(byteorder=Endian.Big, wordorder=self.wordorder)
@@ -334,14 +334,14 @@ class SolarEdge:
         except NotImplementedError:
             raise
 
-    def _read(self, value):
+    async def _read(self, value):
         address, length, rtype, dtype, vtype, label, fmt, batch = value
 
         try:
             if rtype == registerType.INPUT:
-                return self._decode_value(self._read_input_registers(address, length), length, dtype, vtype)
+                return self._decode_value(await self._read_input_registers(address, length), length, dtype, vtype)
             elif rtype == registerType.HOLDING:
-                return self._decode_value(self._read_holding_registers(address, length), length, dtype, vtype)
+                return self._decode_value(await self._read_holding_registers(address, length), length, dtype, vtype)
             else:
                 raise NotImplementedError(rtype)
         except NotImplementedError:
@@ -349,7 +349,7 @@ class SolarEdge:
         except AttributeError:
             return False
 
-    def _read_all(self, values, rtype):
+    async def _read_all(self, values, rtype):
         addr_min = False
         addr_max = False
 
@@ -373,9 +373,9 @@ class SolarEdge:
 
         try:
             if rtype == registerType.INPUT:
-                data = self._read_input_registers(offset, length)
+                data = await self._read_input_registers(offset, length)
             elif rtype == registerType.HOLDING:
-                data = self._read_holding_registers(offset, length)
+                data = await self._read_holding_registers(offset, length)
             else:
                 raise NotImplementedError(rtype)
 
@@ -397,39 +397,39 @@ class SolarEdge:
 
         return results
 
-    def _write(self, value, data):
+    async def _write(self, value, data):
         address, length, rtype, dtype, vtype, label, fmt, batch = value
 
         try:
             if rtype == registerType.HOLDING:
-                return self._write_holding_register(address, self._encode_value(data, dtype))
+                return await self._write_holding_register(address, self._encode_value(data, dtype))
             else:
                 raise NotImplementedError(rtype)
         except NotImplementedError:
             raise
 
-    def connect(self):
-        return self.client.connect()
+    async def connect(self):
+        return await self.client.connect()
 
-    def disconnect(self):
-        self.client.close()
+    async def disconnect(self):
+        await self.client.close()
 
     def connected(self):
-        return self.client.is_socket_open()
+        return self.client.connected
 
-    def read(self, key):
+    async def read(self, key):
         if key not in self.registers:
             raise KeyError(key)
 
-        return {key: self._read(self.registers[key])}
+        return {key: await self._read(self.registers[key])}
 
-    def write(self, key, data):
+    async def write(self, key, data):
         if key not in self.registers:
             raise KeyError(key)
 
-        return self._write(self.registers[key], data)
+        return await self._write(self.registers[key], data)
 
-    def read_all(self, rtype=registerType.HOLDING):
+    async def read_all(self, rtype=registerType.HOLDING):
         registers = {k: v for k, v in self.registers.items() if (v[2] == rtype)}
         results = {}
 
@@ -439,7 +439,7 @@ class SolarEdge:
             if not register_batch:
                 break
 
-            results.update(self._read_all(register_batch, rtype))
+            results.update(await self._read_all(register_batch, rtype))
 
         return results
 
@@ -538,13 +538,13 @@ class Inverter(SolarEdge):
             (0xe240, 1, registerType.HOLDING, registerDataType.UINT16, int, "", "", 1)
         ]
 
-    def meters(self):
-        meters = [self._read(v) for v in self.meter_dids]
+    async def meters(self):
+        meters = [await self._read(v) for v in self.meter_dids]
 
         return {f"Meter{idx + 1}": Meter(offset=idx, parent=self) for idx, v in enumerate(meters) if v}
 
-    def batteries(self):
-        batteries = [self._read(v) for v in self.battery_dids]
+    async def batteries(self):
+        batteries = [await self._read(v) for v in self.battery_dids]
 
         return {f"Battery{idx + 1}": Battery(offset=idx, parent=self) for idx, v in enumerate(batteries) if v != 255}
 
@@ -745,8 +745,16 @@ class InverterEnhancedData(SolarEdge):
             "site_storage_soe": (0xE02F, 2, registerType.HOLDING, registerDataType.FLOAT32, float, "Aggregated SOE of all batteries on site", "0-100", 4),
         }
 
+async def test():
+    res = await inverter.enhanced_data().read_all()
+    print(res)
+    res = await inverter.meters()
+    print(res)
+    res = await inverter.batteries()
+    print(res)
+
 if __name__ == "__main__":
     inverter = Inverter(host="192.168.0.23", port=1502)
-    print(inverter.enhanced_data().read_all())
+    asyncio.run(test())
     #print(inverter.read("export_control_mode"))
     #print(inverter.read_all())
