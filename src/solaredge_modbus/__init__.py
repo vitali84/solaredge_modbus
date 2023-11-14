@@ -411,8 +411,8 @@ class SolarEdge:
     async def connect(self):
         return await self.client.connect()
 
-    async def disconnect(self):
-        await self.client.close()
+    def disconnect(self):
+        self.client.close()
 
     def connected(self):
         return self.client.connected
